@@ -39,11 +39,11 @@ const stateInfo = {
     },
     'kedah': {
         name: "Kedah",
-        // Kedah state coordinate boundaries (more reliable)
-        south: 5.4,
+        // Precise Kedah state coordinate boundaries (avoiding Penang and Thailand overlap)
+        south: 5.6,  // Moved north to avoid Penang overlap
         west: 99.6,
-        north: 6.7,
-        east: 101.3
+        north: 6.5,  // Moved south to avoid Thailand overlap
+        east: 101.0  // Moved west to avoid Thailand overlap
     },
     'perlis': {
         name: "Perlis",
@@ -231,6 +231,36 @@ function processBuildingData(overpassData, stateName) {
                 
                 // Additional safety check: exclude anything south of the Johor-Singapore border
                 if (elementCenter.lat < 1.47) {
+                    filteredCount++;
+                    return;
+                }
+            }
+            
+            // Enhanced filtering for Kedah to exclude Penang and Thailand data
+            if (stateName === 'kedah') {
+                // Penang boundaries: approximately 5.2°N to 5.7°N and 100.1°E to 100.6°E
+                // Exclude anything that falls within Penang territory
+                if (elementCenter.lat >= 5.2 && elementCenter.lat <= 5.7 && 
+                    elementCenter.lng >= 100.1 && elementCenter.lng <= 100.6) {
+                    filteredCount++;
+                    return;
+                }
+                
+                // Additional safety check: exclude anything in the Penang area
+                if (elementCenter.lat < 5.6 && elementCenter.lng > 100.0 && elementCenter.lng < 100.7) {
+                    filteredCount++;
+                    return;
+                }
+                
+                // Thailand boundaries: exclude anything north of Malaysia-Thailand border
+                // Malaysia-Thailand border is approximately at 6.7°N
+                if (elementCenter.lat > 6.7) {
+                    filteredCount++;
+                    return;
+                }
+                
+                // Additional Thailand filtering: exclude anything in southern Thailand area
+                if (elementCenter.lat > 6.5 && elementCenter.lng > 101.0) {
                     filteredCount++;
                     return;
                 }
