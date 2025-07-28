@@ -984,7 +984,8 @@ function updateSelection() {
     if (selectedItems.size === 0) {
         selectAllCheckbox.indeterminate = false;
         selectAllCheckbox.checked = false;
-    } else if (selectedItems.size === Math.min(filteredData.length, 1000)) {
+    } else if (selectedItems.size === filteredData.length) {
+        // All filtered buildings are selected (not just visible ones)
         selectAllCheckbox.indeterminate = false;
         selectAllCheckbox.checked = true;
     } else {
@@ -996,17 +997,47 @@ function toggleSelectAll() {
     const selectAllCheckbox = document.getElementById('selectAllCheckbox');
     const checkboxes = document.querySelectorAll('#dataTableBody input[type="checkbox"]');
     
-    checkboxes.forEach(checkbox => {
-        checkbox.checked = selectAllCheckbox.checked;
-    });
+    if (selectAllCheckbox.checked) {
+        // Select all filtered buildings
+        selectedItems.clear();
+        filteredData.forEach(item => {
+            selectedItems.add(item.id);
+        });
+        
+        // Update visible checkboxes
+        checkboxes.forEach(checkbox => {
+            checkbox.checked = true;
+        });
+    } else {
+        // Clear all selections
+        selectedItems.clear();
+        checkboxes.forEach(checkbox => {
+            checkbox.checked = false;
+        });
+    }
     
-    updateSelection();
+    updateStats();
 }
 
 function selectAll() {
+    // Select all filtered buildings, not just visible ones in table
+    selectedItems.clear();
+    filteredData.forEach(item => {
+        selectedItems.add(item.id);
+    });
+    
+    // Update all visible checkboxes
     const checkboxes = document.querySelectorAll('#dataTableBody input[type="checkbox"]');
     checkboxes.forEach(checkbox => checkbox.checked = true);
-    updateSelection();
+    
+    // Update select all checkbox state
+    const selectAllCheckbox = document.getElementById('selectAllCheckbox');
+    if (filteredData.length > 0) {
+        selectAllCheckbox.checked = true;
+        selectAllCheckbox.indeterminate = false;
+    }
+    
+    updateStats();
 }
 
 function clearSelection() {
