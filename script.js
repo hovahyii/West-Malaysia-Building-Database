@@ -52,6 +52,54 @@ const stateInfo = {
         west: 100.1,
         north: 6.7,
         east: 100.6
+    },
+    'selangor': {
+        name: "Selangor",
+        // Selangor state coordinate boundaries
+        south: 2.5,
+        west: 100.8,
+        north: 4.0,
+        east: 102.0
+    },
+    'kuala-lumpur': {
+        name: "Kuala Lumpur",
+        // Kuala Lumpur federal territory coordinate boundaries
+        south: 3.0,
+        west: 101.6,
+        north: 3.3,
+        east: 101.8
+    },
+    'putrajaya': {
+        name: "Putrajaya",
+        // Putrajaya federal territory coordinate boundaries
+        south: 2.9,
+        west: 101.6,
+        north: 3.0,
+        east: 101.7
+    },
+    'negeri-sembilan': {
+        name: "Negeri Sembilan",
+        // Negeri Sembilan state coordinate boundaries
+        south: 2.4,
+        west: 101.8,
+        north: 3.2,
+        east: 102.5
+    },
+    'perak': {
+        name: "Perak",
+        // Perak state coordinate boundaries
+        south: 3.5,
+        west: 100.5,
+        north: 5.5,
+        east: 101.8
+    },
+    'terengganu': {
+        name: "Terengganu",
+        // Terengganu state coordinate boundaries
+        south: 4.0,
+        west: 102.5,
+        north: 5.8,
+        east: 103.5
     }
 };
 
@@ -266,14 +314,47 @@ function processBuildingData(overpassData, stateName) {
                 }
             }
             
+            // Data validation and cleaning
+            const buildingName = getBuildingName(elementTags);
+            const category = getBuildingCategory(elementTags);
+            const address = getAddress(elementTags);
+            const buildingCity = getCityFromTags(elementTags, stateName);
+            const district = getDistrictFromTags(elementTags, stateName);
+            const area = getAreaFromTags(elementTags, stateName);
+            
+            // Skip buildings with invalid or missing essential data
+            if (!buildingName || buildingName === 'Building' || buildingName === 'yes') {
+                filteredCount++;
+                return;
+            }
+            
+            // Skip buildings with invalid coordinates
+            if (isNaN(elementCenter.lat) || isNaN(elementCenter.lon) ||
+                elementCenter.lat === 0 || elementCenter.lon === 0) {
+                filteredCount++;
+                return;
+            }
+            
+            // Skip duplicate buildings (same name and location)
+            const existingBuilding = buildings.find(b => 
+                b.building === buildingName && 
+                Math.abs(b.latitude - elementCenter.lat) < 0.001 &&
+                Math.abs(b.longitude - elementCenter.lon) < 0.001
+            );
+            
+            if (existingBuilding) {
+                filteredCount++;
+                return;
+            }
+            
             const building = {
                 id: id++,
-                building: getBuildingName(elementTags),
-                category: getBuildingCategory(elementTags),
-                address: getAddress(elementTags),
-                city: getCityFromTags(elementTags, stateName),
-                district: getDistrictFromTags(elementTags, stateName),
-                area: getAreaFromTags(elementTags, stateName),
+                building: buildingName,
+                category: category,
+                address: address,
+                city: buildingCity,
+                district: district,
+                area: area,
                 state: stateInfo[stateName].name,
                 latitude: elementCenter.lat,
                 longitude: elementCenter.lon,
@@ -300,123 +381,298 @@ function processBuildingData(overpassData, stateName) {
     return buildings;
 }
 
-// Extract building name from OSM tags
+// Enhanced building name extraction from OSM tags
 function getBuildingName(tags) {
-    // Try to get a proper name first
-    let name = tags.name || 
-               tags['name:en'] || 
-               tags['name:ms'] ||
-               tags['addr:housename'] || 
-               tags.brand || 
-               tags.operator ||
-               (tags['addr:housenumber'] && tags['addr:street'] ? 
-                `${tags['addr:housenumber']} ${tags['addr:street']}` : null);
+    // Priority order for building names
+    const nameSources = [
+        tags.name,
+        tags['name:en'],
+        tags['name:ms'],
+        tags['name:zh'],
+        tags['name:ta'],
+        tags.brand,
+        tags.operator,
+        tags['addr:housename'],
+        tags['addr:housenumber'] && tags['addr:street'] ? 
+            `${tags['addr:housenumber']} ${tags['addr:street']}` : null
+    ];
     
-    // If no proper name found, use fallback logic
-    if (!name) {
-        name = tags.amenity || tags.shop || tags.office || tags.building || 'Building';
-    }
+    // Find the first valid name
+    let name = nameSources.find(source => source && source.trim() !== '');
     
-    // Replace meaningless "yes" values with more descriptive names
-    if (name === 'yes') {
-        // Quick residential check without calling expensive getBuildingCategory
-        if (tags.building === 'residential' || 
-            tags.building === 'house' || 
-            tags.building === 'apartments' ||
-            tags.amenity === 'housing' || 
-            tags.landuse === 'residential' ||
-            tags['addr:housenumber']) {
-            return 'Residence';
+    // Enhanced fallback logic with better categorization
+    if (!name || name === 'yes') {
+        // Residential buildings
+        if (tags.building === 'residential' || tags.building === 'house' || 
+            tags.building === 'apartments' || tags.building === 'detached' ||
+            tags.amenity === 'housing' || tags.landuse === 'residential') {
+            return tags['addr:housenumber'] ? 
+                `Residence ${tags['addr:housenumber']}` : 'Residential Building';
         }
         
-        // Quick commercial/office checks
-        if (tags.building === 'commercial' || tags.building === 'retail' || tags.shop) {
-            return 'Commercial Building';
+        // Commercial buildings
+        if (tags.building === 'commercial' || tags.building === 'retail' || 
+            tags.building === 'shop' || tags.shop) {
+            return tags.shop ? `${tags.shop.charAt(0).toUpperCase() + tags.shop.slice(1)} Store` : 'Commercial Building';
         }
         
+        // Office buildings
         if (tags.building === 'office' || tags.office) {
-            return 'Office Building';
+            return tags.office ? `${tags.office.charAt(0).toUpperCase() + tags.office.slice(1)} Office` : 'Office Building';
         }
         
-        // For other building=yes cases, use simple fallback
+        // Industrial buildings
+        if (tags.building === 'industrial' || tags.building === 'warehouse' || 
+            tags.building === 'factory') {
+            return 'Industrial Building';
+        }
+        
+        // Religious buildings
+        if (tags.building === 'religious' || tags.amenity === 'place_of_worship') {
+            return tags.religion ? `${tags.religion.charAt(0).toUpperCase() + tags.religion.slice(1)} Place of Worship` : 'Religious Building';
+        }
+        
+        // Educational buildings
+        if (tags.building === 'school' || tags.amenity === 'school' || 
+            tags.amenity === 'university' || tags.amenity === 'college') {
+            return tags.amenity ? `${tags.amenity.charAt(0).toUpperCase() + tags.amenity.slice(1)}` : 'Educational Building';
+        }
+        
+        // Healthcare buildings
+        if (tags.building === 'hospital' || tags.amenity === 'hospital' || 
+            tags.amenity === 'clinic' || tags.amenity === 'doctors') {
+            return tags.amenity ? `${tags.amenity.charAt(0).toUpperCase() + tags.amenity.slice(1)}` : 'Healthcare Building';
+        }
+        
+        // Hotel buildings
+        if (tags.building === 'hotel' || tags.tourism === 'hotel' || 
+            tags.amenity === 'hotel') {
+            return 'Hotel';
+        }
+        
+        // Government buildings
+        if (tags.building === 'government' || tags.amenity === 'police' || 
+            tags.amenity === 'fire_station' || tags.amenity === 'townhall') {
+            return tags.amenity ? `${tags.amenity.charAt(0).toUpperCase() + tags.amenity.slice(1)}` : 'Government Building';
+        }
+        
+        // Generic building types
+        if (tags.building) {
+            return `${tags.building.charAt(0).toUpperCase() + tags.building.slice(1)} Building`;
+        }
+        
+        // Amenity-based names
+        if (tags.amenity) {
+            return `${tags.amenity.charAt(0).toUpperCase() + tags.amenity.slice(1)}`;
+        }
+        
+        // Shop-based names
+        if (tags.shop) {
+            return `${tags.shop.charAt(0).toUpperCase() + tags.shop.slice(1)} Store`;
+        }
+        
         return 'Building';
     }
     
-    return name;
+    // Clean up the name
+    return name.trim();
 }
 
-// Get address from OSM tags
+// Enhanced address extraction from OSM tags
 function getAddress(tags) {
-    const parts = [];
-    if (tags['addr:housenumber']) parts.push(tags['addr:housenumber']);
-    if (tags['addr:street']) parts.push(tags['addr:street']);
-    if (tags['addr:postcode']) parts.push(tags['addr:postcode']);
-    return parts.length > 0 ? parts.join(' ') : 'Address not available';
+    const addressParts = [];
+    
+    // House number
+    if (tags['addr:housenumber']) {
+        addressParts.push(tags['addr:housenumber']);
+    }
+    
+    // Street name
+    if (tags['addr:street']) {
+        addressParts.push(tags['addr:street']);
+    }
+    
+    // Suburb/neighborhood
+    if (tags['addr:suburb']) {
+        addressParts.push(tags['addr:suburb']);
+    }
+    
+    // City
+    if (tags['addr:city']) {
+        addressParts.push(tags['addr:city']);
+    }
+    
+    // District
+    if (tags['addr:district']) {
+        addressParts.push(tags['addr:district']);
+    }
+    
+    // Postcode
+    if (tags['addr:postcode']) {
+        addressParts.push(tags['addr:postcode']);
+    }
+    
+    // State
+    if (tags['addr:state']) {
+        addressParts.push(tags['addr:state']);
+    }
+    
+    // If we have address parts, format them nicely
+    if (addressParts.length > 0) {
+        return addressParts.join(', ');
+    }
+    
+    // Fallback: try to construct from other tags
+    const fallbackParts = [];
+    
+    if (tags['addr:housename']) {
+        fallbackParts.push(tags['addr:housename']);
+    }
+    
+    if (tags['addr:street']) {
+        fallbackParts.push(tags['addr:street']);
+    }
+    
+    if (tags['addr:city']) {
+        fallbackParts.push(tags['addr:city']);
+    }
+    
+    if (fallbackParts.length > 0) {
+        return fallbackParts.join(', ');
+    }
+    
+    return 'Address not available';
 }
 
-// Categorize building based on OSM tags
+// Enhanced building categorization based on OSM tags
 function getBuildingCategory(tags) {
-    // Amenities
-    if (tags.amenity) {
-        switch (tags.amenity) {
-            case 'hospital': case 'clinic': case 'doctors': case 'pharmacy': return 'Healthcare';
-            case 'school': case 'university': case 'college': case 'kindergarten': return 'Educational Institution';
-            case 'restaurant': case 'cafe': case 'fast_food': case 'food_court': return 'Food & Beverage';
-            case 'bank': case 'atm': return 'Financial Services';
-            case 'fuel': return 'Gas Station';
-            case 'place_of_worship': return 'Religious Site';
-            case 'police': case 'fire_station': case 'townhall': return 'Government Building';
-            case 'post_office': return 'Postal Services';
-            case 'library': return 'Public Services';
-            case 'parking': return 'Parking';
-            default: return 'Public Amenity';
-        }
+    // Healthcare facilities
+    if (tags.amenity === 'hospital' || tags.amenity === 'clinic' || 
+        tags.amenity === 'doctors' || tags.amenity === 'pharmacy' ||
+        tags.building === 'hospital') {
+        return 'Healthcare';
     }
     
-    // Shops
+    // Educational institutions
+    if (tags.amenity === 'school' || tags.amenity === 'university' || 
+        tags.amenity === 'college' || tags.amenity === 'kindergarten' ||
+        tags.building === 'school') {
+        return 'Educational Institution';
+    }
+    
+    // Food & Beverage
+    if (tags.amenity === 'restaurant' || tags.amenity === 'cafe' || 
+        tags.amenity === 'fast_food' || tags.amenity === 'food_court' ||
+        tags.amenity === 'bar' || tags.amenity === 'pub') {
+        return 'Food & Beverage';
+    }
+    
+    // Financial services
+    if (tags.amenity === 'bank' || tags.amenity === 'atm' || 
+        tags.amenity === 'insurance') {
+        return 'Financial Services';
+    }
+    
+    // Transportation
+    if (tags.amenity === 'fuel' || tags.amenity === 'car_wash' ||
+        tags.amenity === 'car_rental' || tags.amenity === 'taxi') {
+        return 'Transportation';
+    }
+    
+    // Religious sites
+    if (tags.amenity === 'place_of_worship' || tags.building === 'religious' ||
+        tags.religion) {
+        return 'Religious Site';
+    }
+    
+    // Government buildings
+    if (tags.amenity === 'police' || tags.amenity === 'fire_station' || 
+        tags.amenity === 'townhall' || tags.amenity === 'courthouse' ||
+        tags.building === 'government') {
+        return 'Government Building';
+    }
+    
+    // Postal services
+    if (tags.amenity === 'post_office') {
+        return 'Postal Services';
+    }
+    
+    // Public services
+    if (tags.amenity === 'library' || tags.amenity === 'community_centre' ||
+        tags.amenity === 'social_facility') {
+        return 'Public Services';
+    }
+    
+    // Parking
+    if (tags.amenity === 'parking' || tags.building === 'parking') {
+        return 'Parking';
+    }
+    
+    // Shopping and retail
     if (tags.shop) {
-        if (tags.shop === 'mall' || tags.shop === 'department_store') return 'Shopping Mall';
-        if (tags.shop === 'supermarket' || tags.shop === 'convenience') return 'Retail Store';
-        return 'Shop';
-    }
-    
-    // Tourism
-    if (tags.tourism) {
-        switch (tags.tourism) {
-            case 'hotel': case 'motel': case 'hostel': return 'Hotel';
-            case 'attraction': case 'museum': case 'gallery': return 'Tourist Attraction';
-            default: return 'Tourism';
+        if (tags.shop === 'mall' || tags.shop === 'department_store' || 
+            tags.shop === 'supermarket' || tags.shop === 'convenience') {
+            return 'Shopping Mall';
         }
+        return 'Retail Store';
     }
     
-    // Leisure
-    if (tags.leisure) {
-        switch (tags.leisure) {
-            case 'sports_centre': case 'fitness_centre': case 'swimming_pool': return 'Sports & Recreation';
-            case 'park': case 'playground': return 'Park & Recreation';
-            default: return 'Leisure';
-        }
+    // Tourism and accommodation
+    if (tags.tourism === 'hotel' || tags.tourism === 'motel' || 
+        tags.tourism === 'hostel' || tags.building === 'hotel' ||
+        tags.amenity === 'hotel') {
+        return 'Hotel';
     }
     
-    // Office
-    if (tags.office) {
+    if (tags.tourism === 'attraction' || tags.tourism === 'museum' || 
+        tags.tourism === 'gallery' || tags.tourism === 'viewpoint') {
+        return 'Tourist Attraction';
+    }
+    
+    // Sports and recreation
+    if (tags.leisure === 'sports_centre' || tags.leisure === 'fitness_centre' ||
+        tags.leisure === 'swimming_pool' || tags.leisure === 'stadium') {
+        return 'Sports & Recreation';
+    }
+    
+    // Parks and recreation
+    if (tags.leisure === 'park' || tags.leisure === 'playground' ||
+        tags.leisure === 'garden') {
+        return 'Park & Recreation';
+    }
+    
+    // Office buildings
+    if (tags.office || tags.building === 'office') {
         return 'Office Building';
     }
     
-    // Building types
+    // Commercial buildings
+    if (tags.building === 'commercial' || tags.building === 'retail' ||
+        tags.building === 'shop') {
+        return 'Commercial Building';
+    }
+    
+    // Industrial buildings
+    if (tags.building === 'industrial' || tags.building === 'warehouse' ||
+        tags.building === 'factory') {
+        return 'Industrial Building';
+    }
+    
+    // Residential buildings
+    if (tags.building === 'residential' || tags.building === 'apartments' ||
+        tags.building === 'house' || tags.building === 'detached' ||
+        tags.amenity === 'housing') {
+        return 'Residential Building';
+    }
+    
+    // Generic building types
     if (tags.building) {
-        switch (tags.building) {
-            case 'hotel': return 'Hotel';
-            case 'hospital': return 'Healthcare';
-            case 'school': return 'Educational Institution';
-            case 'commercial': case 'retail': return 'Commercial Building';
-            case 'industrial': case 'warehouse': return 'Industrial Building';
-            case 'residential': case 'apartments': case 'house': return 'Residential Building';
-            case 'office': return 'Office Building';
-            case 'government': return 'Government Building';
-            case 'religious': return 'Religious Site';
-            default: return 'Building';
-        }
+        return `${tags.building.charAt(0).toUpperCase() + tags.building.slice(1)} Building`;
+    }
+    
+    // Generic amenities
+    if (tags.amenity) {
+        return 'Public Amenity';
     }
     
     return 'Unknown';
@@ -467,9 +723,79 @@ function getDistrictFromTags(tags, stateName) {
         if (allText.includes('hulu langat') || allText.includes('kajang') || allText.includes('cheras') || allText.includes('ampang')) return 'Hulu Langat';
         if (allText.includes('kuala selangor')) return 'Kuala Selangor';
         if (allText.includes('sepang') || allText.includes('cyberjaya')) return 'Sepang';
+        if (allText.includes('rawang')) return 'Gombak';
         
         // Default to Petaling for central areas
         return 'Petaling';
+    }
+    
+    // Enhanced location-based inference for Kuala Lumpur
+    if (stateName === 'kuala-lumpur') {
+        const allText = `${name} ${city} ${street} ${suburb} ${amenity}`.toLowerCase();
+        
+        if (allText.includes('bangsar') || allText.includes('brickfields')) return 'Bangsar';
+        if (allText.includes('bukit bintang') || allText.includes('klcc')) return 'Bukit Bintang';
+        if (allText.includes('cheras')) return 'Cheras';
+        if (allText.includes('kepong')) return 'Kepong';
+        if (allText.includes('klang lama')) return 'Segambut';
+        if (allText.includes('segambut')) return 'Segambut';
+        if (allText.includes('sentul')) return 'Sentul';
+        if (allText.includes('setapak') || allText.includes('wangsa maju')) return 'Titiwangsa';
+        if (allText.includes('titiwangsa')) return 'Titiwangsa';
+        
+        return 'Kuala Lumpur';
+    }
+    
+    // Enhanced location-based inference for Putrajaya
+    if (stateName === 'putrajaya') {
+        return 'Putrajaya';
+    }
+    
+    // Enhanced location-based inference for Negeri Sembilan
+    if (stateName === 'negeri-sembilan') {
+        const allText = `${name} ${city} ${street} ${suburb} ${amenity}`.toLowerCase();
+        
+        if (allText.includes('seremban')) return 'Seremban';
+        if (allText.includes('nilai')) return 'Seremban';
+        if (allText.includes('port dickson') || allText.includes('pd')) return 'Port Dickson';
+        if (allText.includes('jelebu')) return 'Jelebu';
+        if (allText.includes('jempol')) return 'Jempol';
+        if (allText.includes('rembau')) return 'Rembau';
+        if (allText.includes('tampin')) return 'Tampin';
+        
+        return 'Seremban';
+    }
+    
+    // Enhanced location-based inference for Perak
+    if (stateName === 'perak') {
+        const allText = `${name} ${city} ${street} ${suburb} ${amenity}`.toLowerCase();
+        
+        if (allText.includes('ipoh')) return 'Kinta';
+        if (allText.includes('taiping')) return 'Larut, Matang dan Selama';
+        if (allText.includes('kuala kangsar')) return 'Kuala Kangsar';
+        if (allText.includes('lumut') || allText.includes('manjung')) return 'Manjung';
+        if (allText.includes('parit buntar')) return 'Kerian';
+        if (allText.includes('batu gajah')) return 'Kinta';
+        if (allText.includes('kampar')) return 'Kampar';
+        if (allText.includes('trolak') || allText.includes('slim river')) return 'Batang Padang';
+        if (allText.includes('tanjung malim')) return 'Batang Padang';
+        
+        return 'Kinta';
+    }
+    
+    // Enhanced location-based inference for Terengganu
+    if (stateName === 'terengganu') {
+        const allText = `${name} ${city} ${street} ${suburb} ${amenity}`.toLowerCase();
+        
+        if (allText.includes('kuala terengganu') || allText.includes('kt')) return 'Kuala Terengganu';
+        if (allText.includes('dungun')) return 'Dungun';
+        if (allText.includes('kemaman')) return 'Kemaman';
+        if (allText.includes('marang')) return 'Marang';
+        if (allText.includes('hulu terengganu')) return 'Hulu Terengganu';
+        if (allText.includes('besut')) return 'Besut';
+        if (allText.includes('setiu')) return 'Setiu';
+        
+        return 'Kuala Terengganu';
     }
     
     // For smaller states, use the state name as district
@@ -542,9 +868,77 @@ function getCityFromTags(tags, stateName) {
         if (allText.includes('batu caves')) return 'Batu Caves';
         if (allText.includes('cyberjaya')) return 'Cyberjaya';
         if (allText.includes('sepang')) return 'Sepang';
+        if (allText.includes('rawang')) return 'Rawang';
+        if (allText.includes('port klang')) return 'Port Klang';
         
         // Default to Shah Alam for central locations
         return 'Shah Alam';
+    }
+    
+    // Enhanced city inference for Kuala Lumpur
+    if (stateName === 'kuala-lumpur') {
+        if (allText.includes('kuala lumpur') || allText.includes('kl')) return 'Kuala Lumpur';
+        if (allText.includes('bangsar')) return 'Bangsar';
+        if (allText.includes('brickfields')) return 'Brickfields';
+        if (allText.includes('bukit bintang')) return 'Bukit Bintang';
+        if (allText.includes('cheras')) return 'Cheras';
+        if (allText.includes('kepong')) return 'Kepong';
+        if (allText.includes('klang lama')) return 'Klang Lama';
+        if (allText.includes('segambut')) return 'Segambut';
+        if (allText.includes('sentul')) return 'Sentul';
+        if (allText.includes('setapak')) return 'Setapak';
+        if (allText.includes('titiwangsa')) return 'Titiwangsa';
+        if (allText.includes('wangsa maju')) return 'Wangsa Maju';
+        
+        return 'Kuala Lumpur';
+    }
+    
+    // Enhanced city inference for Putrajaya
+    if (stateName === 'putrajaya') {
+        return 'Putrajaya';
+    }
+    
+    // Enhanced city inference for Negeri Sembilan
+    if (stateName === 'negeri-sembilan') {
+        if (allText.includes('seremban')) return 'Seremban';
+        if (allText.includes('nilai')) return 'Nilai';
+        if (allText.includes('port dickson') || allText.includes('pd')) return 'Port Dickson';
+        if (allText.includes('jelebu')) return 'Jelebu';
+        if (allText.includes('jempol')) return 'Jempol';
+        if (allText.includes('rembau')) return 'Rembau';
+        if (allText.includes('tampin')) return 'Tampin';
+        
+        return 'Seremban';
+    }
+    
+    // Enhanced city inference for Perak
+    if (stateName === 'perak') {
+        if (allText.includes('ipoh')) return 'Ipoh';
+        if (allText.includes('taiping')) return 'Taiping';
+        if (allText.includes('kuala kangsar')) return 'Kuala Kangsar';
+        if (allText.includes('lumut')) return 'Lumut';
+        if (allText.includes('manjung')) return 'Manjung';
+        if (allText.includes('parit buntar')) return 'Parit Buntar';
+        if (allText.includes('batu gajah')) return 'Batu Gajah';
+        if (allText.includes('kampar')) return 'Kampar';
+        if (allText.includes('trolak')) return 'Trolak';
+        if (allText.includes('slim river')) return 'Slim River';
+        if (allText.includes('tanjung malim')) return 'Tanjung Malim';
+        
+        return 'Ipoh';
+    }
+    
+    // Enhanced city inference for Terengganu
+    if (stateName === 'terengganu') {
+        if (allText.includes('kuala terengganu') || allText.includes('kt')) return 'Kuala Terengganu';
+        if (allText.includes('dungun')) return 'Dungun';
+        if (allText.includes('kemaman')) return 'Kemaman';
+        if (allText.includes('marang')) return 'Marang';
+        if (allText.includes('hulu terengganu')) return 'Hulu Terengganu';
+        if (allText.includes('besut')) return 'Besut';
+        if (allText.includes('setiu')) return 'Setiu';
+        
+        return 'Kuala Terengganu';
     }
     
     // For other states, use building name or reasonable defaults
