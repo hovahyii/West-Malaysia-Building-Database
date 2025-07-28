@@ -244,12 +244,14 @@ For support, feature requests, or questions:
 
 ## 🔄 Version History
 
-### Current Version: 1.0.0
-- ✅ Complete West Malaysia coverage
-- ✅ Advanced filtering system
-- ✅ Export functionality
-- ✅ Responsive design
-- ✅ Performance optimizations
+### Current Version: 1.2.0
+- ✅ Complete West Malaysia coverage with area-based queries
+- ✅ Advanced filtering system with real-time search
+- ✅ Export functionality (Excel & CSV)
+- ✅ Responsive design with emoji markers
+- ✅ Performance optimizations and hybrid query system
+- ✅ Singapore exclusion for Johor state
+- ✅ Enhanced building categorization
 
 ### Roadmap
 - 🔄 East Malaysia expansion (Sabah, Sarawak)
