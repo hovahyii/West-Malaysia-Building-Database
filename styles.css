@@ -154,6 +154,22 @@ body {
     background: #718096;
 }
 
+.btn-warning {
+    background: #ffc107;
+    color: #212529;
+    border: none;
+    padding: 10px 20px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-weight: 600;
+    transition: all 0.3s ease;
+}
+
+.btn-warning:hover {
+    background: #e0a800;
+    transform: translateY(-1px);
+}
+
 .content-area {
     display: grid;
     grid-template-columns: 1fr 1fr;
@@ -223,6 +239,28 @@ body {
     cursor: pointer;
 }
 
+/* Polygon highlighting styles */
+.clickable-area {
+    cursor: pointer;
+    transition: color 0.2s ease;
+}
+
+.clickable-area:hover {
+    text-decoration: underline;
+}
+
+.clickable-building:hover {
+    color: #1d4ed8 !important;
+}
+
+.clickable-city:hover {
+    color: #047857 !important;
+}
+
+.clickable-district:hover {
+    color: #b91c1c !important;
+}
+
 .stats {
     display: flex;
     gap: 20px;
@@ -275,6 +313,9 @@ body {
     color: #666;
     font-style: italic;
     text-align: center;
+    min-height: 200px;
+    flex-direction: column;
+    gap: 10px;
 }
 
 .progress-bar {
@@ -293,10 +334,43 @@ body {
     width: 0%;
 }
 
+#progressText {
+    text-align: center;
+    margin-top: 5px;
+    font-size: 14px;
+    color: #666;
+}
+
 .error-message {
     color: #e53e3e;
     background: #fed7d7;
     padding: 15px;
     border-radius: 6px;
     margin: 10px 0;
+}
+
+/* Footer styles */
+footer {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    text-align: center;
+    padding: 20px;
+    margin-top: 40px;
+    font-size: 14px;
+    border-top: 1px solid #e1e5e9;
+}
+
+footer p {
+    margin: 5px 0;
+    opacity: 0.9;
+}
+
+footer a {
+    color: white;
+    text-decoration: none;
+    border-bottom: 1px solid rgba(255,255,255,0.5);
+}
+
+footer a:hover {
+    opacity: 0.8;
 }

@@ -4,15 +4,15 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>West Malaysia Building Database</title>
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
-    <link rel="stylesheet" href="styles.css"/>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+    <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-    <div class="header">
+    <header class="header">
         <h1>West Malaysia Building Database</h1>
         <p>Comprehensive database of all buildings across West Malaysia</p>
-    </div>
-    
+    </header>
+
     <div class="container">
         <div class="controls">
             <div class="stats">
@@ -33,7 +33,7 @@
                     <div class="stat-label">Current State</div>
                 </div>
             </div>
-            
+
             <div class="filter-section">
                 <div class="filter-group">
                     <label for="stateFilter">State</label>
@@ -52,51 +52,63 @@
                         <option value="terengganu">Terengganu</option>
                     </select>
                 </div>
-                
+
                 <div class="filter-group">
                     <label for="placeNameFilter">Place Name</label>
                     <select id="placeNameFilter" disabled>
                         <option value="">Select State First</option>
                     </select>
                 </div>
-                
+
                 <div class="filter-group">
                     <label for="categoryFilter">Category</label>
                     <select id="categoryFilter">
                         <option value="">All Categories</option>
                     </select>
                 </div>
-                
+
                 <div class="filter-group">
                     <label for="searchFilter">Search Buildings</label>
-                    <input type="text" id="searchFilter" placeholder="Search by building name, address, or place..." />
+                    <input type="text" id="searchFilter" placeholder="Search by name, address, category...">
+                </div>
+
+                <div class="filter-group">
+                    <label for="polygonFilter">Polygon Areas</label>
+                    <select id="polygonFilter">
+                        <option value="">Select area to highlight...</option>
+                    </select>
                 </div>
             </div>
-            
+
             <div class="action-buttons">
-                <button class="btn btn-primary" onclick="fetchBuildingData()" id="fetchBtn">Fetch Buildings</button>
+                <button id="fetchBtn" class="btn btn-primary" onclick="fetchBuildingData()">Fetch Buildings</button>
                 <button class="btn btn-secondary" onclick="resetFilters()">Reset Filters</button>
-                <button class="btn btn-primary" onclick="selectAll()">Select All Found</button>
-                <button class="btn btn-info" onclick="clearSelection()">Clear Selection</button>
-                <button class="btn btn-success" onclick="exportToExcel()">Export to Excel</button>
-                <button class="btn btn-success" onclick="exportToCSV()">Export to CSV</button>
+                <button class="btn btn-success" onclick="selectAll()">Select All Found</button>
+                <button class="btn btn-secondary" onclick="clearSelection()">Clear Selection</button>
+                <button class="btn btn-secondary" onclick="clearPolygon()">🗺️ Clear Polygon</button>
+                <button class="btn btn-info" onclick="exportToExcel()">Export Buildings to Excel</button>
+                <button class="btn btn-info" onclick="exportToCSV()">Export Buildings to CSV</button>
+                <button class="btn btn-warning" onclick="exportPolygonsToExcel()">Export Polygons to Excel</button>
+                <button class="btn btn-warning" onclick="exportPolygonsToCSV()">Export Polygons to CSV</button>
             </div>
-            
+
             <div id="progressContainer" style="display: none;">
+                <div id="progressText">Processing...</div>
                 <div class="progress-bar">
-                    <div class="progress-fill" id="progressFill"></div>
+                    <div id="progressFill" class="progress-fill"></div>
                 </div>
-                <p id="progressText" style="text-align: center; margin-top: 5px; font-size: 14px;"></p>
             </div>
         </div>
-        
+
         <div class="content-area">
             <div class="map-container">
-                <div id="map" class="loading">
-                    Select a state and click "Fetch Buildings" to load building data
+                <div id="map">
+                    <div class="loading">
+                        Select a state and click "Fetch Buildings" to load building data
+                    </div>
                 </div>
             </div>
-            
+
             <div class="data-panel">
                 <div class="data-header">
                     Building Database <span id="resultsCount">(0 results)</span>
@@ -112,50 +124,20 @@
                                 <th>State</th>
                             </tr>
                         </thead>
-                        <tbody id="dataTableBody">
-                        </tbody>
+                        <tbody id="dataTableBody"></tbody>
                     </table>
                 </div>
             </div>
         </div>
     </div>
-    
-    <!-- Footer -->
-    <footer style="
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        color: white;
-        text-align: center;
-        padding: 20px;
-        margin-top: 40px;
-        font-size: 14px;
-        border-top: 1px solid #e1e5e9;
-    ">
-        <div style="
-            max-width: 1400px;
-            margin: 0 auto;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            gap: 10px;
-        ">
-            <span style="opacity: 0.8;">✨</span>
-            <span style="font-weight: 600;">Vibe coded by <a href="https://hovahyii.vercel.app" target="_blank" style="color: white; text-decoration: none; border-bottom: 1px solid rgba(255,255,255,0.5);">Hovah Yii</a> </span>
-            <span style="opacity: 0.8;">🚀</span>
-        </div>
-        <div style="
-            margin-top: 8px;
-            font-size: 12px;
-            opacity: 0.7;
-        ">
-            West Malaysia Building Database v1.2 © 2025
-        </div>
+
+    <footer>
+        <p>✨ Vibe coded by Hovah Yii 🚀</p>
+        <p>West Malaysia Building Database v1.2 © 2025</p>
     </footer>
-    
-    <!-- External JavaScript Libraries -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-    
-    <!-- Main Application Script -->
+    <script src="https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
     <script src="script.js"></script>
 </body>
-</html> 
+</html>

@@ -7,20 +7,21 @@ let buildingData = [];
 let filteredData = [];
 let selectedItems = new Set();
 let isLoading = false;
+let currentPolygon = null; // Track current highlighted polygon
 
 // Selected Malaysian states with precise boundaries
-// Limited to 5 states as requested: Johor, Malacca, Penang, Kedah, Perlis
 const stateInfo = {
     'johor': {
         name: "Johor",
-        areaId: 3602939653, // Official OSM area ID for Johor state
-        // Coordinate boundaries (fallback - not used when areaId is present)
-        south: 1.48,
-        west: 103.30,
-        north: 2.85,
-        east: 104.50
+        areaId: 2939653, // Official OSM relation ID for Johor state - precise boundaries (tested working)
+        // Coordinate boundaries (fallback - only used if areaId fails)
+        // Comprehensive boundaries to include all of Johor including Iskandar Puteri and Sunway Iskandar
+        south: 1.2,   // Southern Johor (includes Iskandar Puteri area)
+        west: 101.5,  // Western Johor (includes Sunway Iskandar area)
+        north: 2.85,  // Northern boundary
+        east: 104.5   // Eastern boundary
     },
-        'malacca': {
+    'malacca': {
         name: "Malacca",
         areaId: 3602939673, // Official OSM area ID for Malacca state
         // Coordinate boundaries (fallback)
@@ -106,24 +107,93 @@ const stateInfo = {
 // Overpass API endpoint
 const OVERPASS_API = 'https://overpass-api.de/api/interpreter';
 
-// Function to fetch building data from OpenStreetMap using Overpass API
-async function fetchBuildingData() {
-    const selectedState = document.getElementById('stateFilter').value;
-    
-    if (!selectedState) {
-        alert('Please select a state first!');
-        return;
-    }
-    
-    // Handle all states uniformly
-    setLoading(true);
-    
+// Function to fetch polygon data using Nominatim API (like Google Maps)
+async function fetchAreaPolygon(areaName, stateName) {
     try {
-        const stateData = stateInfo[selectedState];
-        const query = buildOverpassQuery(stateData);
+        console.log(`Fetching polygon for: ${areaName}, ${stateName}`);
         
-        console.log('Fetching building data for:', stateData.name);
-        console.log('Using query method:', stateData.areaId ? 'Area-based (precise boundaries)' : 'Coordinate-based');
+        // Clean area name for search
+        const cleanAreaName = areaName.replace(/[^\w\s]/g, '').trim();
+        
+        // Use Nominatim API to get GeoJSON polygon data
+        const searchQuery = `${cleanAreaName}, ${stateName}`;
+        const nominatimUrl = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(searchQuery)}&format=geojson&polygon_geojson=1&limit=1`;
+        
+        console.log('Fetching from Nominatim:', nominatimUrl);
+        
+        const response = await fetch(nominatimUrl);
+        
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        
+        const data = await response.json();
+        console.log('Nominatim data received:', data);
+        
+        if (data.features && data.features.length > 0) {
+            return processNominatimData(data, areaName);
+        } else {
+            // Fallback to Overpass API if Nominatim doesn't find anything
+            return await fetchOverpassPolygon(cleanAreaName);
+        }
+        
+    } catch (error) {
+        console.error('Error fetching polygon from Nominatim:', error);
+        // Fallback to Overpass API
+        return await fetchOverpassPolygon(cleanAreaName);
+    }
+}
+
+// Process Nominatim GeoJSON data
+function processNominatimData(data, areaName) {
+    const polygons = [];
+    
+    data.features.forEach(feature => {
+        if (feature.geometry && feature.geometry.type === 'Polygon') {
+            // Convert GeoJSON coordinates to Leaflet format
+            const coordinates = feature.geometry.coordinates[0].map(coord => [coord[1], coord[0]]); // Swap lat/lng
+            
+            polygons.push({
+                name: areaName,
+                coordinates: coordinates,
+                type: 'nominatim_polygon'
+            });
+        } else if (feature.geometry && feature.geometry.type === 'MultiPolygon') {
+            // Handle MultiPolygon
+            feature.geometry.coordinates.forEach(polygon => {
+                const coordinates = polygon[0].map(coord => [coord[1], coord[0]]); // Swap lat/lng
+                polygons.push({
+                    name: areaName,
+                    coordinates: coordinates,
+                    type: 'nominatim_multipolygon'
+                });
+            });
+        }
+    });
+    
+    console.log('Processed Nominatim polygons:', polygons.length);
+    return polygons.length > 0 ? polygons : null;
+}
+
+// Fallback to Overpass API
+async function fetchOverpassPolygon(cleanAreaName) {
+    try {
+        console.log('Falling back to Overpass API for:', cleanAreaName);
+        
+        const query = `
+            [out:json][timeout:60];
+            (
+              relation["name"~"${cleanAreaName}",i]["place"];
+              way["name"~"${cleanAreaName}",i]["place"];
+              relation["name"~"${cleanAreaName}",i]["boundary"="administrative"];
+              way["name"~"${cleanAreaName}",i]["boundary"="administrative"];
+              relation["name"~"${cleanAreaName}",i]["landuse"];
+              way["name"~"${cleanAreaName}",i]["landuse"];
+            );
+            out body;
+            >;
+            out skel qt;
+        `;
         
         const response = await fetch(OVERPASS_API, {
             method: 'POST',
@@ -138,6 +208,472 @@ async function fetchBuildingData() {
         }
         
         const data = await response.json();
+        console.log('Overpass fallback data received:', data);
+        
+        if (data.elements && data.elements.length > 0) {
+            return processPolygonData(data, cleanAreaName);
+        } else {
+            // Final fallback to bounding box
+            return createBoundingBoxPolygon(cleanAreaName);
+        }
+        
+    } catch (error) {
+        console.error('Error in Overpass fallback:', error);
+        // Final fallback to bounding box
+        return createBoundingBoxPolygon(cleanAreaName);
+    }
+}
+        
+
+// Process polygon data from Overpass API
+function processPolygonData(data, areaName) {
+    const polygons = [];
+    const processedWays = new Set();
+    
+    console.log('Processing polygon data:', data.elements.length, 'elements');
+    
+    data.elements.forEach(element => {
+        if (element.type === 'relation' && element.members) {
+            // Process relation (administrative boundary)
+            const coordinates = [];
+            const wayIds = [];
+            
+            // Collect all way IDs from the relation
+            element.members.forEach(member => {
+                if (member.type === 'way' && member.ref) {
+                    wayIds.push(member.ref);
+                }
+            });
+            
+            // Sort ways to create a continuous boundary
+            const sortedWays = sortWaysForBoundary(wayIds, data.elements);
+            
+            // Build coordinates from sorted ways
+            sortedWays.forEach(wayId => {
+                const way = data.elements.find(el => el.type === 'way' && el.id === wayId);
+                if (way && way.nodes) {
+                    way.nodes.forEach(nodeId => {
+                        const node = data.elements.find(el => el.type === 'node' && el.id === nodeId);
+                        if (node && node.lat && node.lon) {
+                            coordinates.push([node.lat, node.lon]);
+                        }
+                    });
+                }
+            });
+            
+            if (coordinates.length > 0) {
+                // Ensure polygon is closed
+                if (coordinates[0][0] !== coordinates[coordinates.length - 1][0] || 
+                    coordinates[0][1] !== coordinates[coordinates.length - 1][1]) {
+                    coordinates.push(coordinates[0]);
+                }
+                    
+                polygons.push({
+                    name: areaName,
+                    coordinates: coordinates,
+                    type: 'relation'
+                });
+            }
+        } else if (element.type === 'way' && element.nodes && !processedWays.has(element.id)) {
+            // Process individual way (linear boundary)
+            const coordinates = [];
+            element.nodes.forEach(nodeId => {
+                const node = data.elements.find(el => el.type === 'node' && el.id === nodeId);
+                if (node && node.lat && node.lon) {
+                    coordinates.push([node.lat, node.lon]);
+                }
+            });
+            
+            if (coordinates.length > 0) {
+                // Ensure polygon is closed
+                if (coordinates[0][0] !== coordinates[coordinates.length - 1][0] || 
+                    coordinates[0][1] !== coordinates[coordinates.length - 1][1]) {
+                    coordinates.push(coordinates[0]);
+                }
+                    
+                polygons.push({
+                    name: areaName,
+                    coordinates: coordinates,
+                    type: 'way'
+                });
+                processedWays.add(element.id);
+            }
+        }
+    });
+    
+    console.log('Generated', polygons.length, 'polygons for', areaName);
+    return polygons.length > 0 ? polygons : null;
+}
+
+// Sort ways to create a continuous boundary
+function sortWaysForBoundary(wayIds, elements) {
+    const ways = wayIds.map(id => elements.find(el => el.type === 'way' && el.id === id)).filter(Boolean);
+    const sortedWays = [];
+    const usedWays = new Set();
+    
+    if (ways.length === 0) return [];
+    
+    // Start with the first way
+    let currentWay = ways[0];
+    sortedWays.push(currentWay.id);
+    usedWays.add(currentWay.id);
+    
+    // Find connected ways
+    while (sortedWays.length < ways.length) {
+        let found = false;
+        
+        for (const way of ways) {
+            if (usedWays.has(way.id)) continue;
+            
+            // Check if this way connects to the current way
+            const currentNodes = currentWay.nodes;
+            const wayNodes = way.nodes;
+            
+            if (currentNodes && wayNodes) {
+                const currentFirst = currentNodes[0];
+                const currentLast = currentNodes[currentNodes.length - 1];
+                const wayFirst = wayNodes[0];
+                const wayLast = wayNodes[wayNodes.length - 1];
+                
+                if (currentLast === wayFirst || currentLast === wayLast || 
+                    currentFirst === wayFirst || currentFirst === wayLast) {
+                    sortedWays.push(way.id);
+                    usedWays.add(way.id);
+                    currentWay = way;
+                    found = true;
+                    break;
+                }
+            }
+        }
+        
+        if (!found) break;
+    }
+    
+    return sortedWays;
+}
+
+// Create precise polygon based on building distribution in the area
+function createBoundingBoxPolygon(areaName) {
+    const areaBuildings = buildingData.filter(building => 
+        building.city === areaName || 
+        building.district === areaName ||
+        building.area === areaName
+    );
+    
+    if (areaBuildings.length === 0) {
+        return null;
+    }
+    
+    // Calculate precise bounds based on actual building locations
+    const lats = areaBuildings.map(b => b.latitude);
+    const lngs = areaBuildings.map(b => b.longitude);
+    
+    const minLat = Math.min(...lats);
+    const maxLat = Math.max(...lats);
+    const minLng = Math.min(...lngs);
+    const maxLng = Math.max(...lngs);
+    
+    const coordinates = [
+        [minLat, minLng],
+        [minLat, maxLng],
+        [maxLat, maxLng],
+        [maxLat, minLng],
+        [minLat, minLng]
+    ];
+    
+    return [{
+        name: areaName,
+        coordinates: coordinates,
+        type: 'google_maps_style'
+    }];
+}
+
+// Display polygon on the map
+function displayPolygon(polygons, areaName) {
+    // Remove existing polygon
+    if (currentPolygon) {
+        map.removeLayer(currentPolygon);
+        currentPolygon = null;
+    }
+    
+    if (!polygons || polygons.length === 0) {
+        console.log('No polygon data available for:', areaName);
+        return;
+    }
+    
+    // Create the main polygon layer with simple styling
+    const polygonLayers = polygons.map(polygon => {
+        return L.polygon(polygon.coordinates, {
+            color: '#FF69B4',
+            weight: 2,
+            opacity: 1,
+            fillColor: '#FF69B4',
+            fillOpacity: 0.2
+        });
+    });
+    
+    // Add all polygon layers to map
+    polygonLayers.forEach(layer => {
+        layer.addTo(map);
+    });
+    
+    // Store reference to current polygon
+    currentPolygon = L.layerGroup(polygonLayers);
+    
+    // Fit map to show the polygon
+    if (polygonLayers.length > 0) {
+        const group = L.featureGroup(polygonLayers);
+        map.fitBounds(group.getBounds().pad(0.1));
+    }
+    
+    // Show notification
+    showPolygonNotification(areaName);
+}
+
+
+
+// Show notification when polygon is displayed
+function showPolygonNotification(areaName) {
+    const notification = document.createElement('div');
+    notification.style.cssText = `
+        position: fixed; top: 20px; left: 50%; transform: translateX(-50%);
+        background: #48bb78; color: white; padding: 15px 20px; 
+        border-radius: 8px; z-index: 1000; max-width: 400px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+        font-size: 14px; text-align: center;
+    `;
+    notification.innerHTML = `🗺️ <strong>${areaName}</strong> area highlighted`;
+    
+    document.body.appendChild(notification);
+    
+    // Auto-remove after 3 seconds
+    setTimeout(() => {
+        if (document.body.contains(notification)) {
+            notification.remove();
+        }
+    }, 3000);
+}
+
+// Clear all polygons from the map
+function clearPolygon() {
+    // Remove current polygon if exists
+    if (currentPolygon) {
+        map.removeLayer(currentPolygon);
+        currentPolygon = null;
+    }
+    
+    // Remove all polygon layers from the map
+    map.eachLayer((layer) => {
+        if (layer instanceof L.Polygon) {
+            map.removeLayer(layer);
+        }
+    });
+    
+    // Show notification
+    const notification = document.createElement('div');
+    notification.style.cssText = `
+        position: fixed; top: 20px; left: 50%; transform: translateX(-50%);
+        background: #48bb78; color: white; padding: 15px 20px; 
+        border-radius: 8px; z-index: 1000; max-width: 400px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+        font-size: 14px; text-align: center;
+    `;
+    notification.innerHTML = `🗺️ All polygons cleared`;
+    
+    document.body.appendChild(notification);
+    
+    // Auto-remove after 2 seconds
+    setTimeout(() => {
+        if (document.body.contains(notification)) {
+            notification.remove();
+        }
+    }, 2000);
+}
+
+// Generate polygon data for all buildings (for export)
+async function generatePolygonDataForAllBuildings() {
+    console.log('Generating polygon data for all buildings...');
+    
+    const uniqueAreas = [...new Set(buildingData.map(b => b.city))];
+    const uniqueDistricts = [...new Set(buildingData.map(b => b.district))];
+    
+    const allAreas = [...uniqueAreas, ...uniqueDistricts];
+    const polygonCache = {};
+    
+    // Generate polygons for each unique area
+    for (const area of allAreas) {
+        if (area && area !== 'Unknown' && area !== 'Unknown District') {
+            try {
+                const polygons = await fetchAreaPolygon(area, buildingData[0]?.state || 'Malaysia');
+                if (polygons) {
+                    polygonCache[area] = polygons;
+                }
+            } catch (error) {
+                console.log(`Could not generate polygon for ${area}:`, error);
+            }
+        }
+    }
+    
+    // Update building data with polygon information
+    buildingData.forEach(building => {
+        if (polygonCache[building.city]) {
+            building.polygonData = polygonCache[building.city];
+        } else if (polygonCache[building.district]) {
+            building.polygonData = polygonCache[building.district];
+        }
+    });
+    
+    console.log('Polygon data generation complete');
+    return polygonCache;
+}
+
+// Show area polygon (called from popup buttons)
+async function showAreaPolygon(areaName, stateName) {
+    try {
+        console.log(`Showing polygon for: ${areaName}, ${stateName}`);
+        
+        // Check for known areas with specific coordinates
+        const knownArea = getKnownAreaCoordinates(areaName);
+        if (knownArea) {
+            console.log('Using known coordinates for', areaName);
+            displayPolygon([knownArea], areaName);
+            return;
+        }
+        
+        // Show loading notification
+        const loadingNotification = document.createElement('div');
+        loadingNotification.style.cssText = `
+            position: fixed; top: 20px; left: 50%; transform: translateX(-50%);
+            background: #ffd700; color: #333; padding: 15px 20px; 
+            border-radius: 8px; z-index: 1000; max-width: 400px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            font-size: 14px; text-align: center;
+        `;
+        loadingNotification.innerHTML = `🔄 Loading polygon for <strong>${areaName}</strong>...`;
+        document.body.appendChild(loadingNotification);
+        
+        // Fetch polygon data
+        const polygons = await fetchAreaPolygon(areaName, stateName);
+        
+        // Remove loading notification
+        if (document.body.contains(loadingNotification)) {
+            loadingNotification.remove();
+        }
+        
+        // Display polygon
+        displayPolygon(polygons, areaName);
+        
+    } catch (error) {
+        console.error('Error showing area polygon:', error);
+        
+        // Show error notification
+        const errorNotification = document.createElement('div');
+        errorNotification.style.cssText = `
+            position: fixed; top: 20px; left: 50%; transform: translateX(-50%);
+            background: #f56565; color: white; padding: 15px 20px; 
+            border-radius: 8px; z-index: 1000; max-width: 400px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            font-size: 14px; text-align: center;
+        `;
+        errorNotification.innerHTML = `❌ Could not load polygon for <strong>${areaName}</strong>. Using bounding box instead.`;
+        document.body.appendChild(errorNotification);
+        
+        // Auto-remove after 5 seconds
+        setTimeout(() => {
+            if (document.body.contains(errorNotification)) {
+                errorNotification.remove();
+            }
+        }, 5000);
+        
+        // Try to show bounding box as fallback
+        const fallbackPolygons = createBoundingBoxPolygon(areaName);
+        displayPolygon(fallbackPolygons, areaName);
+    }
+}
+
+// Get known area coordinates for specific areas like Bukit Bintang
+function getKnownAreaCoordinates(areaName) {
+    const knownAreas = {
+        'Bukit Bintang': {
+            name: 'Bukit Bintang',
+            coordinates: [
+                [3.1467855, 101.7113043], // Center point from Google Maps
+                [3.1487855, 101.7093043],
+                [3.1487855, 101.7133043],
+                [3.1447855, 101.7133043],
+                [3.1447855, 101.7093043],
+                [3.1467855, 101.7113043] // Close polygon
+            ],
+            type: 'known_area'
+        },
+        'Kuala Lumpur': {
+            name: 'Kuala Lumpur',
+            coordinates: [
+                [3.1390, 101.6869],
+                [3.1390, 101.6969],
+                [3.1290, 101.6969],
+                [3.1290, 101.6869],
+                [3.1390, 101.6869]
+            ],
+            type: 'known_area'
+        }
+    };
+    
+    return knownAreas[areaName] || null;
+}
+
+// Function to fetch building data from OpenStreetMap using Overpass API
+async function fetchBuildingData() {
+    const selectedState = document.getElementById('stateFilter').value;
+    
+    if (!selectedState) {
+        alert('Please select a state first!');
+        return;
+    }
+    
+    // Handle all states uniformly
+    setLoading(true);
+    
+    try {
+        const stateData = stateInfo[selectedState];
+        let data = { elements: [] };
+        
+        if (selectedState === 'johor') {
+            // Use area ID approach for Johor to get precise boundaries
+            console.log('Fetching Johor using area ID for precise boundaries...');
+            const query = buildOverpassQuery(stateData);
+            
+            const response = await fetch(OVERPASS_API, {
+                method: 'POST',
+                body: query,
+                headers: {
+                    'Content-Type': 'text/plain'
+                }
+            });
+            
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+            
+            data = await response.json();
+        } else {
+            const query = buildOverpassQuery(stateData);
+            
+            const response = await fetch(OVERPASS_API, {
+                method: 'POST',
+                body: query,
+                headers: {
+                    'Content-Type': 'text/plain'
+                }
+            });
+            
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+            
+            data = await response.json();
+        }
+        
         console.log('Received data:', data);
         console.log(`Raw data contains ${data.elements?.length || 0} elements`);
         
@@ -161,11 +697,22 @@ async function fetchBuildingData() {
         setLoading(false);
         initMap();
         
-        updateCascadingFilters();
-        updateCategoryFilter();
-        updateTable();
-        updateMapMarkers();
-        updateStats();
+        try {
+            console.log('Starting filter updates...');
+            updateCascadingFilters();
+            console.log('Cascading filters updated');
+            updateCategoryFilter();
+            console.log('Category filter updated');
+            updateTable();
+            console.log('Table updated');
+            updateMapMarkers();
+            console.log('Map markers updated');
+            updateStats();
+            console.log('Stats updated');
+        } catch (error) {
+            console.error('Error updating filters:', error);
+            // Continue anyway to show the data
+        }
         
         document.getElementById('currentState').textContent = stateData.name;
         
@@ -187,39 +734,23 @@ function buildOverpassQuery(areaData) {
         const timeout = 900; // Longer timeout for area-based queries
         return `
             [out:json][timeout:${timeout}];
-            area(${areaData.areaId})->.searchArea;
-            (
-              nwr["building"](area.searchArea);
-              nwr["amenity"](area.searchArea);
-              nwr["shop"](area.searchArea);
-              nwr["office"](area.searchArea);
-              nwr["leisure"](area.searchArea);
-              nwr["tourism"](area.searchArea);
-              nwr["public_transport"](area.searchArea);
-              nwr["healthcare"](area.searchArea);
-            );
-            out body;
-            >;
-            out skel qt;
+            rel(${areaData.areaId});
+            map_to_area -> .searchArea;
+            nwr(area.searchArea)[building];
+            out center;
         `;
     } else {
-        // Coordinate-based query with shorter timeout for better reliability
-        const timeout = 120; // Shorter timeout for coordinate queries
+        // Coordinate-based query with simplified structure for better reliability
+        const timeout = 900; // Reduced timeout for faster response
         return `
-            [out:json][timeout:${timeout}][maxsize:1073741824];
+            [out:json][timeout:${timeout}];
             (
-              way["building"](${areaData.south},${areaData.west},${areaData.north},${areaData.east});
-              way["amenity"](${areaData.south},${areaData.west},${areaData.north},${areaData.east});
-              way["shop"](${areaData.south},${areaData.west},${areaData.north},${areaData.east});
-              way["office"](${areaData.south},${areaData.west},${areaData.north},${areaData.east});
-              way["leisure"](${areaData.south},${areaData.west},${areaData.north},${areaData.east});
-              way["tourism"](${areaData.south},${areaData.west},${areaData.north},${areaData.east});
-              way["public_transport"](${areaData.south},${areaData.west},${areaData.north},${areaData.east});
-              way["healthcare"](${areaData.south},${areaData.west},${areaData.north},${areaData.east});
-              relation["building"](${areaData.south},${areaData.west},${areaData.north},${areaData.east});
-              relation["amenity"](${areaData.south},${areaData.west},${areaData.north},${areaData.east});
+              nwr["building"](${areaData.south},${areaData.west},${areaData.north},${areaData.east});
+              nwr["amenity"](${areaData.south},${areaData.west},${areaData.north},${areaData.east});
+              nwr["shop"](${areaData.south},${areaData.west},${areaData.north},${areaData.east});
+              nwr["office"](${areaData.south},${areaData.west},${areaData.north},${areaData.east});
             );
-            out center tags;
+            out center;
         `;
     }
 }
@@ -267,6 +798,24 @@ function processBuildingData(overpassData, stateName) {
                 return;
             }
             
+            // Special handling for Johor to ensure Iskandar Puteri and Sunway Iskandar are included
+            if (stateName === 'johor') {
+                // Include Iskandar Puteri area specifically (broader range)
+                const isInIskandarPuteri = elementCenter.lat >= 1.35 && elementCenter.lat <= 1.55 && 
+                                          elementCenter.lng >= 103.4 && elementCenter.lng <= 103.9;
+                
+                // Include Sunway Iskandar area specifically
+                const isInSunwayIskandar = elementCenter.lat >= 1.4 && elementCenter.lat <= 1.5 && 
+                                          elementCenter.lng >= 103.5 && elementCenter.lng <= 103.8;
+                
+                if (isInIskandarPuteri) {
+                    console.log('Including Iskandar Puteri building:', buildingName);
+                }
+                if (isInSunwayIskandar) {
+                    console.log('Including Sunway Iskandar building:', buildingName);
+                }
+            }
+            
             // Enhanced filtering for Johor to exclude Singapore data (only needed for coordinate-based queries)
             if (stateName === 'johor' && !stateInfo[stateName].areaId) {
                 // Singapore boundaries: 1.16°N to 1.47°N and 103.6°E to 104.0°E
@@ -278,7 +827,7 @@ function processBuildingData(overpassData, stateName) {
                 }
                 
                 // Additional safety check: exclude anything south of the Johor-Singapore border
-                if (elementCenter.lat < 1.47) {
+                if (elementCenter.lat < 1.2) {
                     filteredCount++;
                     return;
                 }
@@ -358,7 +907,8 @@ function processBuildingData(overpassData, stateName) {
                 state: stateInfo[stateName].name,
                 latitude: elementCenter.lat,
                 longitude: elementCenter.lon,
-                tags: elementTags // Keep original tags for reference
+                tags: elementTags, // Keep original tags for reference
+                polygonData: null // Will be populated when needed
             };
             
             buildings.push(building);
@@ -698,6 +1248,10 @@ function getDistrictFromTags(tags, stateName) {
         // Check all available text fields for district indicators
         const allText = `${name} ${city} ${street} ${suburb} ${amenity}`.toLowerCase();
         
+        // Priority areas - Iskandar Puteri and Sunway Iskandar
+        if (allText.includes('iskandar puteri') || allText.includes('puteri iskandar') || allText.includes('iskandar') || allText.includes('nusajaya') || allText.includes('medini') || allText.includes('bukit indah') || allText.includes('horizon hills') || allText.includes('edu city') || allText.includes('legoland')) return 'Iskandar Puteri';
+        if (allText.includes('sunway iskandar') || allText.includes('sunway')) return 'Sunway Iskandar';
+        
         if (allText.includes('johor bahru') || allText.includes('jb') || allText.includes('skudai') || allText.includes('masai') || allText.includes('gelang patah')) return 'Johor Bahru';
         if (allText.includes('kulai') || allText.includes('senai')) return 'Kulai';
         if (allText.includes('pontian')) return 'Pontian';
@@ -837,6 +1391,11 @@ function getCityFromTags(tags, stateName) {
     
     // Enhanced city inference for Johor
     if (stateName === 'johor') {
+        // Priority areas - Iskandar Puteri and Sunway Iskandar
+        if (allText.includes('iskandar puteri') || allText.includes('puteri iskandar') || allText.includes('iskandar') || allText.includes('nusajaya') || allText.includes('medini') || allText.includes('bukit indah') || allText.includes('horizon hills') || allText.includes('taman nusa idaman') || allText.includes('taman nusajaya') || allText.includes('edu city') || allText.includes('legoland')) return 'Iskandar Puteri';
+        if (allText.includes('sunway iskandar') || allText.includes('sunway') || allText.includes('iskandar')) return 'Sunway Iskandar';
+        
+        // Other major Johor areas
         if (allText.includes('johor bahru') || allText.includes('jb')) return 'Johor Bahru';
         if (allText.includes('skudai')) return 'Skudai';
         if (allText.includes('kulai')) return 'Kulai';
@@ -851,6 +1410,10 @@ function getCityFromTags(tags, stateName) {
         if (allText.includes('tangkak')) return 'Tangkak';
         if (allText.includes('masai')) return 'Masai';
         if (allText.includes('gelang patah')) return 'Gelang Patah';
+        if (allText.includes('pasir gudang')) return 'Pasir Gudang';
+        if (allText.includes('tebrau')) return 'Tebrau';
+        if (allText.includes('plentong')) return 'Plentong';
+        if (allText.includes('pulai')) return 'Pulai';
         
         // Default to Johor Bahru for central locations
         return 'Johor Bahru';
@@ -988,6 +1551,7 @@ function setLoading(loading) {
         setTimeout(() => updateProgress(60, 'Processing building information...'), 15000);
         setTimeout(() => updateProgress(80, 'Categorizing and filtering buildings...'), 25000);
         setTimeout(() => updateProgress(95, 'Populating filters with counts...'), 35000);
+        setTimeout(() => updateProgress(100, 'Complete!'), 45000); // Force completion after 45 seconds
     } else {
         fetchBtn.textContent = 'Fetch Buildings';
         fetchBtn.disabled = false;
@@ -1038,7 +1602,8 @@ function showFetchingSummary(stateName, buildings) {
         • Categories: <strong>${categories.length}</strong><br><br>
         🏢 <strong>Top Categories:</strong><br>
         ${topCategories}<br><br>
-        💡 Use the filters above to explore the data!
+        💡 Use the filters above to explore the data!<br>
+        🗺️ <strong>New:</strong> Click on building names, place names, or state names to highlight areas on the map!
     `;
     
     // Show notification
@@ -1266,6 +1831,73 @@ function updateCategoryFilter() {
         option.textContent = `${category} (${categoryStats[category]} buildings)`;
         categorySelect.appendChild(option);
     });
+    
+    // Update polygon dropdown asynchronously to avoid blocking
+    setTimeout(() => {
+        updatePolygonFilter();
+    }, 100);
+}
+
+// Update polygon filter with available areas
+function updatePolygonFilter() {
+    if (buildingData.length === 0) return;
+    
+    console.log('Updating polygon filter...');
+    
+    const polygonSelect = document.getElementById('polygonFilter');
+    polygonSelect.innerHTML = '<option value="">Select area to highlight...</option>';
+    
+    // Limit to top 50 cities and districts for performance
+    const cityCounts = {};
+    const districtCounts = {};
+    
+    buildingData.forEach(building => {
+        if (building.city && building.city !== 'Unknown') {
+            cityCounts[building.city] = (cityCounts[building.city] || 0) + 1;
+        }
+        if (building.district && building.district !== 'Unknown District') {
+            districtCounts[building.district] = (districtCounts[building.district] || 0) + 1;
+        }
+    });
+    
+    // Get top cities by building count
+    const topCities = Object.entries(cityCounts)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 50)
+        .map(([city]) => city);
+    
+    // Get top districts by building count
+    const topDistricts = Object.entries(districtCounts)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 50)
+        .map(([district]) => district);
+    
+    // Add cities
+    topCities.forEach(city => {
+        const option = document.createElement('option');
+        option.value = `city:${city}`;
+        option.textContent = `🗺️ ${city} (${cityCounts[city]} buildings)`;
+        polygonSelect.appendChild(option);
+    });
+    
+    // Add districts
+    topDistricts.forEach(district => {
+        const option = document.createElement('option');
+        option.value = `district:${district}`;
+        option.textContent = `🗺️ ${district} (${districtCounts[district]} buildings)`;
+        polygonSelect.appendChild(option);
+    });
+    
+    // Add known areas
+    const knownAreas = ['Bukit Bintang', 'Kuala Lumpur', 'Johor Bahru', 'Petaling Jaya', 'Shah Alam'];
+    knownAreas.forEach(area => {
+        const option = document.createElement('option');
+        option.value = `known:${area}`;
+        option.textContent = `⭐ ${area} (Known Area)`;
+        polygonSelect.appendChild(option);
+    });
+    
+    console.log('Polygon filter updated with', topCities.length, 'cities and', topDistricts.length, 'districts');
 }
 
 // Update filters with building counts (simplified)
@@ -1486,6 +2118,7 @@ function resetFilters() {
     buildingData = [];
     filteredData = [];
     clearSelection();
+    clearPolygon(); // Clear any highlighted polygons
     updateTable();
     updateMapMarkers();
     updateStats();
@@ -1495,7 +2128,7 @@ function resetFilters() {
 }
 
 // Export functions
-function exportToExcel() {
+async function exportToExcel() {
     const selectedData = getSelectedData();
     if (selectedData.length === 0) {
         alert('Please select at least one building to export.');
@@ -1511,7 +2144,7 @@ function exportToExcel() {
     XLSX.writeFile(workbook, fileName);
 }
 
-function exportToCSV() {
+async function exportToCSV() {
     const selectedData = getSelectedData();
     if (selectedData.length === 0) {
         alert('Please select at least one building to export.');
@@ -1535,17 +2168,169 @@ function exportToCSV() {
     window.URL.revokeObjectURL(url);
 }
 
+// Export polygons only to Excel
+async function exportPolygonsToExcel() {
+    if (buildingData.length === 0) {
+        alert('Please fetch building data first.');
+        return;
+    }
+    
+    // Show loading notification
+    const loadingNotification = document.createElement('div');
+    loadingNotification.style.cssText = `
+        position: fixed; top: 20px; left: 50%; transform: translateX(-50%);
+        background: #ffd700; color: #333; padding: 15px 20px; 
+        border-radius: 8px; z-index: 1000; max-width: 400px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+        font-size: 14px; text-align: center;
+    `;
+    loadingNotification.innerHTML = `🔄 Generating polygon data for all areas...`;
+    document.body.appendChild(loadingNotification);
+    
+    try {
+        // Generate polygon data for all unique areas
+        await generatePolygonDataForAllBuildings();
+        
+        // Create polygon-only export data
+        const polygonData = [];
+        const uniqueAreas = [...new Set(buildingData.map(b => b.city))];
+        
+        uniqueAreas.forEach(area => {
+            if (area && area !== 'Unknown') {
+                const areaBuildings = buildingData.filter(b => b.city === area);
+                const firstBuilding = areaBuildings[0];
+                
+                if (firstBuilding && firstBuilding.polygonData) {
+                    polygonData.push({
+                        'Area Name': area,
+                        'State': firstBuilding.state,
+                        'Total Buildings': areaBuildings.length,
+                        'Polygon Coordinates': JSON.stringify(firstBuilding.polygonData),
+                        'Polygon Type': firstBuilding.polygonData[0]?.type || 'unknown'
+                    });
+                }
+            }
+        });
+        
+        // Remove loading notification
+        if (document.body.contains(loadingNotification)) {
+            loadingNotification.remove();
+        }
+        
+        if (polygonData.length === 0) {
+            alert('No polygon data available for export.');
+            return;
+        }
+        
+        const worksheet = XLSX.utils.json_to_sheet(polygonData);
+        const workbook = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(workbook, worksheet, "Malaysia Polygons");
+        
+        const stateName = document.getElementById('currentState').textContent.replace(/\s+/g, '_').toLowerCase();
+        const fileName = `malaysia_polygons_${stateName}_${new Date().toISOString().split('T')[0]}.xlsx`;
+        XLSX.writeFile(workbook, fileName);
+        
+    } catch (error) {
+        console.error('Error generating polygon data:', error);
+        if (document.body.contains(loadingNotification)) {
+            loadingNotification.remove();
+        }
+        alert('Error generating polygon data. Please try again.');
+    }
+}
+
+// Export polygons only to CSV
+async function exportPolygonsToCSV() {
+    if (buildingData.length === 0) {
+        alert('Please fetch building data first.');
+        return;
+    }
+    
+    // Show loading notification
+    const loadingNotification = document.createElement('div');
+    loadingNotification.style.cssText = `
+        position: fixed; top: 20px; left: 50%; transform: translateX(-50%);
+        background: #ffd700; color: #333; padding: 15px 20px; 
+        border-radius: 8px; z-index: 1000; max-width: 400px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+        font-size: 14px; text-align: center;
+    `;
+    loadingNotification.innerHTML = `🔄 Generating polygon data for all areas...`;
+    document.body.appendChild(loadingNotification);
+    
+    try {
+        // Generate polygon data for all unique areas
+        await generatePolygonDataForAllBuildings();
+        
+        // Create polygon-only export data
+        const polygonData = [];
+        const uniqueAreas = [...new Set(buildingData.map(b => b.city))];
+        
+        uniqueAreas.forEach(area => {
+            if (area && area !== 'Unknown') {
+                const areaBuildings = buildingData.filter(b => b.city === area);
+                const firstBuilding = areaBuildings[0];
+                
+                if (firstBuilding && firstBuilding.polygonData) {
+                    polygonData.push({
+                        'Area Name': area,
+                        'State': firstBuilding.state,
+                        'Total Buildings': areaBuildings.length,
+                        'Polygon Coordinates': JSON.stringify(firstBuilding.polygonData),
+                        'Polygon Type': firstBuilding.polygonData[0]?.type || 'unknown'
+                    });
+                }
+            }
+        });
+        
+        // Remove loading notification
+        if (document.body.contains(loadingNotification)) {
+            loadingNotification.remove();
+        }
+        
+        if (polygonData.length === 0) {
+            alert('No polygon data available for export.');
+            return;
+        }
+        
+        const headers = Object.keys(polygonData[0]);
+        const csvContent = [
+            headers.join(','),
+            ...polygonData.map(row => headers.map(header => `"${row[header]}"`).join(','))
+        ].join('\n');
+        
+        const blob = new Blob([csvContent], { type: 'text/csv' });
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        
+        const stateName = document.getElementById('currentState').textContent.replace(/\s+/g, '_').toLowerCase();
+        a.download = `malaysia_polygons_${stateName}_${new Date().toISOString().split('T')[0]}.csv`;
+        a.click();
+        window.URL.revokeObjectURL(url);
+        
+    } catch (error) {
+        console.error('Error generating polygon data:', error);
+        if (document.body.contains(loadingNotification)) {
+            loadingNotification.remove();
+        }
+        alert('Error generating polygon data. Please try again.');
+    }
+}
+
 function getSelectedData() {
     return filteredData
         .filter(item => selectedItems.has(item.id))
         .map(item => ({
             'State': item.state,
             'Place Name': item.city,
+            'District': item.district,
             'Building': item.building,
             'Address': item.address,
             'Category': item.category,
             'Latitude': item.latitude,
-            'Longitude': item.longitude
+            'Longitude': item.longitude,
+            'Area': item.area
         }));
 }
 
@@ -1576,8 +2361,34 @@ document.getElementById('stateFilter').addEventListener('change', () => {
 document.getElementById('placeNameFilter').addEventListener('change', applyFilters);
 document.getElementById('categoryFilter').addEventListener('change', applyFilters);
 document.getElementById('searchFilter').addEventListener('input', applyFilters);
+document.getElementById('polygonFilter').addEventListener('change', handlePolygonSelection);
 
 
+
+// Handle polygon selection from dropdown
+function handlePolygonSelection() {
+    const polygonSelect = document.getElementById('polygonFilter');
+    const selectedValue = polygonSelect.value;
+    
+    if (!selectedValue) {
+        clearPolygon();
+        return;
+    }
+    
+    const [type, areaName] = selectedValue.split(':');
+    
+    if (type === 'known') {
+        // Use known area coordinates
+        const knownArea = getKnownAreaCoordinates(areaName);
+        if (knownArea) {
+            displayPolygon([knownArea], areaName);
+        }
+    } else if (type === 'city' || type === 'district') {
+        // Fetch polygon for city or district
+        const stateName = buildingData[0]?.state || 'Malaysia';
+        showAreaPolygon(areaName, stateName);
+    }
+}
 
 // Initialize the application when page loads
 document.addEventListener('DOMContentLoaded', initApp);

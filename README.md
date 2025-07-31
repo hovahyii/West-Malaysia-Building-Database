@@ -10,6 +10,7 @@ A comprehensive web-based database application for exploring, filtering, and man
 - **Real-time building visualization** using Leaflet.js and OpenStreetMap
 - **Category-based color coding** for different building types
 - **Detailed building popups** with comprehensive information
+- **Area polygon highlighting** - Click on building names, place names, or state names to highlight entire areas/districts
 - **Responsive map interface** that adapts to screen sizes
 - **Zoom and pan capabilities** with marker clustering for performance
 
@@ -24,8 +25,9 @@ A comprehensive web-based database application for exploring, filtering, and man
 - **Comprehensive building database** with 15+ categories
 - **Real-time statistics dashboard** showing totals and filtered results
 - **Bulk selection capabilities** with select all/clear all options
-- **Export functionality** to Excel (.xlsx) and CSV formats
+- **Export functionality** to Excel (.xlsx) and CSV formats with optional polygon data
 - **Progress tracking** for data fetching operations
+- **Area boundary data** generation for mapping and analysis
 
 ### 🏗️ Building Categories
 - Healthcare (Hospitals, Clinics, Pharmacies)
@@ -98,12 +100,22 @@ A comprehensive web-based database application for exploring, filtering, and man
 4. Sort and filter as needed
 ```
 
-#### Step 4: Export Data
+#### Step 4: Explore Areas with Polygon Highlighting
+```
+1. Click on any building name (blue text) to highlight the entire area
+2. Click on any place name (green text) to show the city/district boundary
+3. Click on any state name (red text) to show the district boundary
+4. Use the "🗺️ Clear Area Highlight" button to remove polygon overlays
+5. Polygon data can be included in exports for further analysis
+```
+
+#### Step 5: Export Data
 ```
 1. Select buildings using checkboxes in the table
 2. Use "Select All Visible" for bulk selection
 3. Choose export format: Excel (.xlsx) or CSV
-4. Download begins automatically
+4. Optionally include polygon data for area boundaries
+5. Download begins automatically
 ```
 
 ## 🛠️ Technical Architecture

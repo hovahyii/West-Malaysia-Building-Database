@@ -1,0 +1,11 @@
+// @name Johor Building
+
+[out:csv(::id, ::type, "building", "name", ::lat, ::lon)];
+
+rel(2939653);
+
+map_to_area -> .searchArea;
+
+nwr(area.searchArea)[building];
+
+out center;
